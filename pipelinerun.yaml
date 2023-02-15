@@ -1,0 +1,49 @@
+apiVersion: tekton.dev/v1beta1
+kind: PipelineRun
+metadata:
+  generateName: kfp-yolov5-pr-
+  namespace: tekton-kfp-yolov5
+spec:
+  pipelineRef:
+    name: kfp-yolov5-pipeline
+  params:
+    - name: gitUrl
+      value: https://github.com/ben-omji/ben-omji.github.io.git
+    - name: gitRevision
+      value: main
+
+    - name: pushDL
+      value: "false"
+    - name: imageRepoDL
+      value: "192.168.3.39:31500/kfp-yolov5-dl"
+    - name: imageTagDL
+      value: "v0.1"
+
+    - name: pushCV
+      value: "true"
+    - name: imageRepoCV
+      value: "192.168.3.39:31500/kfp-yolov5-cv"
+    - name: imageTagCV
+      value: "v0.1"
+
+    - name: pushTR
+      value: "false"
+    - name: imageRepoTR
+      value: "192.168.3.39:31500/kfp-yolov5-tr"
+    - name: imageTagTR
+      value: "v0.1"
+  workspaces:
+    - name: pipeline-shared-data
+      volumeClaimTemplate:
+        spec:
+          accessModes:
+            - ReadWriteOnce # access mode may affect how you can use this volume in parallel tasks
+          resources:
+            requests:
+              storage: 5Gi
+    - name: git-credentials
+      secret:
+        secretName: git-credentials
+    - name: docker-credentials
+      secret:
+        secretName: docker-credentials

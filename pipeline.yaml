@@ -1,0 +1,301 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: tekton-kfp-yolov5
+---
+apiVersion: tekton.dev/v1beta1
+kind: Pipeline
+metadata:
+  name: kfp-yolov5-pipeline
+  namespace: tekton-kfp-yolov5
+spec:
+  workspaces:
+    - name: pipeline-shared-data
+      description: | 
+        This workspace contains the cloned repo files, so they can be read by the
+        next task.
+    - name: git-credentials
+      description: My ssh credentials
+    - name: docker-credentials
+      description: My dockerhub credentials
+  params:
+    - name: gitUrl
+      description: Git repository url
+    - name: gitRevision
+      description: Git revision to check out
+      default: master
+    - name: pushDL
+      description: Set true for building and pushing the image of data download component
+      default: "true"
+    - name: imageRepoDL
+      description: Image repository
+      default: "newid4624/kfp-yolov5-dl"
+    - name: imageTagDL
+      description: Image tag
+      default: "latest"
+    - name: pushCV
+      description: Set true for building and pushing the image of data converting component
+      default: "true"
+    - name: imageRepoCV
+      description: Image repository
+      default: "newid4624/kfp-yolov5-cv"
+    - name: imageTagCV
+      description: Image tag
+      default: "latest"
+    - name: pushTR
+      description: Set true for building and pushing the image of model training component
+      default: "true"
+    - name: imageRepoTR
+      description: Image repository
+      default: "newid4624/kfp-yolov5-tr"
+    - name: imageTagTR
+      description: Image tag
+      default: "latest"
+  tasks:
+    - name: clone-repository
+      taskRef:
+        name: git-clone
+      workspaces:
+        - name: output
+          workspace: pipeline-shared-data
+        - name: ssh-directory
+          workspace: git-credentials
+      params:
+        - name: url
+          value: "$(params.gitUrl)"
+        - name: revision
+          value: "$(params.gitRevision)"
+    - name: build-download-docker-image
+      when:
+        - input: "$(params.pushDL)"
+          operator: in
+          values: ["true"]
+      taskRef:
+        name: kaniko
+      runAfter:
+        - clone-repository
+      workspaces:
+        - name: source
+          workspace: pipeline-shared-data
+        - name: dockerconfig
+          workspace: docker-credentials
+      params:
+        - name: IMAGE
+          value: $(params.imageRepoDL):$(params.imageTagDL)
+        - name: DOCKERFILE
+          value: "./Dockerfile"
+        - name: CONTEXT
+          value: components/dl_data_sftp
+    - name: build-convert-docker-image
+      when:
+        - input: "$(params.pushCV)"
+          operator: in
+          values: ["true"]
+      taskRef:
+        name: kaniko
+      runAfter:
+        - clone-repository
+      workspaces:
+        - name: source
+          workspace: pipeline-shared-data
+        - name: dockerconfig
+          workspace: docker-credentials
+      params:
+        - name: IMAGE
+          value: $(params.imageRepoCV):$(params.imageTagCV)
+        - name: DOCKERFILE
+          value: "./Dockerfile"
+        - name: CONTEXT
+          value: components/petfins_to_yolo
+    - name: build-train-docker-image
+      when:
+        - input: "$(params.pushTR)"
+          operator: in
+          values: ["true"]
+      taskRef:
+        name: kaniko
+      runAfter:
+        - clone-repository
+      workspaces:
+        - name: source
+          workspace: pipeline-shared-data
+         name: dockerconfig
+          workspace: docker-credentials
+      params:
+        - name: IMAGE
+          value: $(params.imageRepoTR):$(params.imageTagTR)
+        - name: DOCKERFILE
+          value: "./Dockerfile"
+        - name: CONTEXT
+          value: components/training
+---
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  # Reference => https://hub.tekton.dev/tekton/task/git-clone
+  name: git-clone
+  namespace: tekton-kfp-yolov5
+spec:
+  workspaces:
+    - name: output
+      description: The git repo will be cloned onto the volume backing this Workspace.
+    - name: ssh-directory
+      optional: true
+      description: |
+        A .ssh directory with private key, known_hosts, config, etc. Copied to
+        the user's home before git commands are executed. Used to authenticate
+        with the git remote when performing the clone. Binding a Secret to this
+        Workspace is strongly recommended over other volume types.
+  params:
+    - name: url
+      description: Repository URL to clone from.
+      type: string
+    - name: revision
+      description: Revision to checkout. (branch, tag, sha, ref, etc...)
+      type: string
+      default: "master"
+    - name: deleteExisting
+      description: Clean out the contents of the destination directory if it already exists before cloning.
+      type: string
+      default: "true"
+    - name: gitInitImage
+      description: The image providing the git-init binary that this Task runs.
+      type: string
+      default: "gcr.io/tekton-releases/github.com/tektoncd/pipeline/cmd/git-init:v0.30.4"
+    - name: userHome
+      description: |
+        Absolute path to the user's home directory.
+      type: string
+      default: "/root"
+  results:
+    - name: commit
+      description: The precise commit SHA that was fetched by this Task.
+    - name: url
+      description: The precise URL that was fetched by this Task.
+  steps:
+    - name: clone
+      image: "$(params.gitInitImage)"
+      env:
+      - name: HOME
+        value: "$(params.userHome)"
+      - name: PARAM_URL
+        value: $(params.url)
+      - name: PARAM_REVISION
+        value: $(params.revision)
+      - name: CHECKOUT_DIR
+        value: $(workspaces.output.path)
+      - name: PARAM_DELETE_EXISTING
+        value: $(params.deleteExisting)
+      - name: PARAM_USER_HOME
+        value: $(params.userHome)
+      - name: WORKSPACE_SSH_DIRECTORY_BOUND
+        value: $(workspaces.ssh-directory.bound)
+      - name: WORKSPACE_SSH_DIRECTORY_PATH
+        value: $(workspaces.ssh-directory.path)
+      script: |
+        #!/usr/bin/env sh
+        set -eux
+
+        if [ "${WORKSPACE_SSH_DIRECTORY_BOUND}" = "true" ] ; then
+          mkdir -p "${PARAM_USER_HOME}"
+          cp -R "${WORKSPACE_SSH_DIRECTORY_PATH}" "${PARAM_USER_HOME}"/.ssh
+          chmod 700 "${PARAM_USER_HOME}"/.ssh
+          chmod -R 400 "${PARAM_USER_HOME}"/.ssh/*
+        fi
+        ls "${PARAM_USER_HOME}"/.ssh
+        cat "${PARAM_USER_HOME}"/.ssh/id_rsa
+
+        cleandir() {
+          # Delete any existing contents of the repo directory if it exists.
+          #
+          # We don't just "rm -rf ${CHECKOUT_DIR}" because ${CHECKOUT_DIR} might be "/"
+          # or the root of a mounted volume.
+          if [ -d "${CHECKOUT_DIR}" ] ; then
+            # Delete non-hidden files and directories
+            rm -rf "${CHECKOUT_DIR:?}"/*
+            # Delete files and directories starting with . but excluding ..
+            rm -rf "${CHECKOUT_DIR}"/.[!.]*
+            # Delete files and directories starting with .. plus any other character
+            rm -rf "${CHECKOUT_DIR}"/..?*
+          fi
+        }
+
+        if [ "${PARAM_DELETE_EXISTING}" = "true" ] ; then
+          cleandir
+        fi
+
+        git clone ${PARAM_URL} -b ${PARAM_REVISION} ${CHECKOUT_DIR} --recursive
+        cd "${CHECKOUT_DIR}"
+        RESULT_SHA="$(git rev-parse HEAD)"
+        printf "%s" "${RESULT_SHA}" > "$(results.commit.path)"
+        printf "%s" "${PARAM_URL}" > "$(results.url.path)"
+        echo "Clone Succeeded"
+  
+---
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  # Reference => https://hub.tekton.dev/tekton/task/kaniko
+  name: kaniko
+  namespace: tekton-kfp-yolov5
+  labels:
+    app.kubernetes.io/version: "0.6"
+  annotations:
+    tekton.dev/pipelines.minVersion: "0.17.0"
+    tekton.dev/categories: Image Build
+    tekton.dev/tags: image-build
+    tekton.dev/displayName: "Build and upload container image using Kaniko"
+    tekton.dev/platforms: "linux/amd64"
+spec:
+  description: >-
+    This Task builds a simple Dockerfile with kaniko and pushes to a registry.
+    This Task stores the image name and digest as results, allowing Tekton Chains to pick up
+    that an image was built & sign it.
+  params:
+    - name: IMAGE
+      description: Name (reference) of the image to build.
+    - name: DOCKERFILE
+      description: Path to the Dockerfile to build.
+      default: ./Dockerfile
+    - name: CONTEXT
+      description: The build context used by Kaniko.
+      default: ./
+    - name: EXTRA_ARGS
+      type: array
+      default: []
+    - name: BUILDER_IMAGE
+      description: The image on which builds will run (default is v1.5.1)
+      default: gcr.io/kaniko-project/executor:v1.9.1
+  workspaces:
+    - name: source
+      description: Holds the context and Dockerfile
+    - name: dockerconfig
+      description: Includes a docker `config.json`
+      optional: true
+      mountPath: /kaniko/.docker
+  results:
+    - name: IMAGE_DIGEST
+      description: Digest of the image just built.
+    - name: IMAGE_URL
+      description: URL of the image just built.
+  steps:
+    - name: build-and-push
+      workingDir: $(workspaces.source.path)
+      image: $(params.BUILDER_IMAGE)
+      args:
+        #- $(params.EXTRA_ARGS)
+        - --dockerfile=$(params.DOCKERFILE)
+        - --context=$(workspaces.source.path)/$(params.CONTEXT) # The user does not need to care the workspace and the source.
+        - --destination=$(params.IMAGE)
+        - --digest-file=$(results.IMAGE_DIGEST.path)
+      # kaniko assumes it is running as root, which means this example fails on platforms
+      # that default to run containers as random uid (like OpenShift). Adding this securityContext
+      # makes it explicit that it needs to run as root.
+      securityContext:
+        runAsUser: 0
+    - name: write-url
+      image: docker.io/library/bash:5.1.4@sha256:b208215a4655538be652b2769d82e576bc4d0a2bb132144c060efc5be8c3f5d6
+      script: |
+        set -e
+        image="$(params.IMAGE)"
+        echo "${image}" | tee "$(results.IMAGE_URL.path)"
